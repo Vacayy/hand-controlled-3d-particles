@@ -20,9 +20,9 @@ export class VisionService {
         // Switch to IMAGE mode for more robust frame handling without timestamp sync issues
         runningMode: "IMAGE", 
         numHands: 2,
-        minHandDetectionConfidence: 0.3, // Lowered for better detection
-        minHandPresenceConfidence: 0.3,
-        minTrackingConfidence: 0.3
+        minHandDetectionConfidence: 0.5, // Lowered for better detection
+        minHandPresenceConfidence: 0.5,
+        minTrackingConfidence: 0.5
       });
 
       return this.handLandmarker;

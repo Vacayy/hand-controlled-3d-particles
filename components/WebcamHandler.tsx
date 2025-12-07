@@ -1,3 +1,4 @@
+
 import React, { useEffect, useRef, useState } from 'react';
 import { VisionService } from '../services/visionService';
 import { HandMetrics } from '../types';
@@ -82,10 +83,10 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
               // Calculate Reference Hand Scale (Wrist 0 to Middle Finger MCP 9)
               const wrist = landmarks[0];
               const middleMCP = landmarks[9];
+              // 2D distance for robust scale calculation
               const handScale = Math.hypot(
                 wrist.x - middleMCP.x,
-                wrist.y - middleMCP.y,
-                wrist.z - middleMCP.z
+                wrist.y - middleMCP.y
               );
               
               // 1. Calculate Pinch (Thumb Tip 4 to Index Tip 8)
@@ -99,6 +100,7 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
               
               // Normalize pinch based on hand scale
               const relativePinch = rawPinchDist / handScale;
+              // 0 = Closed (Pinch), 1 = Open
               const normalizedPinch = Math.min(Math.max((relativePinch - 0.2) / 1.0, 0), 1);
 
               // 2. Calculate "Openness" 
@@ -117,10 +119,16 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
               const x = (wrist.x - 0.5) * -2; 
               const y = -(wrist.y - 0.5) * 2; 
 
+              // 4. Estimate Z (Depth) based on handScale
+              // handScale usually varies between 0.05 (far) to 0.25 (close)
+              // We map this to a Z range approx -1 to 1
+              // Larger scale = closer = positive Z
+              const estimatedZ = (handScale - 0.15) * 10;
+
               return {
                 isOpen,
                 pinchDistance: normalizedPinch,
-                palmPosition: { x, y, z: 0 },
+                palmPosition: { x, y, z: estimatedZ },
                 presence: true
               };
             });

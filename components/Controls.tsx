@@ -1,3 +1,4 @@
+
 import React from 'react';
 import { ShapeType } from '../types';
 import { Palette, Heart, Flower, Globe, Zap, Hand } from 'lucide-react';
@@ -100,13 +101,25 @@ const Controls: React.FC<ControlsProps> = ({
       </div>
 
       {/* Instructions */}
-      <div className="absolute bottom-6 right-6 text-right hidden lg:block opacity-60">
-        <div className="text-[10px] uppercase tracking-widest text-gray-500 mb-2">Gestures</div>
-        <ul className="text-xs text-gray-300 space-y-1">
-          <li>✋ Open Hand: Expand / Relax</li>
-          <li>✊ Closed Fist: Condense / Turbulent</li>
-          <li>🤏 Pinch: Precision Scale</li>
-          <li>👋 Move: Attract / Repel</li>
+      <div className="absolute bottom-6 right-6 text-right hidden lg:block opacity-80">
+        <div className="text-[10px] uppercase tracking-widest text-blue-400 mb-2 font-bold">Dual Hand Controls</div>
+        <ul className="text-xs text-gray-300 space-y-2 font-medium">
+          <li className="flex items-center justify-end gap-2">
+            <span>Relaxed / Idle</span>
+            <span className="bg-gray-800 px-1.5 py-0.5 rounded text-[10px] text-gray-400">Open Hands ✋</span>
+          </li>
+          <li className="flex items-center justify-end gap-2">
+            <span>Grab Object</span>
+            <span className="bg-gray-800 px-1.5 py-0.5 rounded text-[10px] text-white">Double Pinch 🤏</span>
+          </li>
+          <li className="flex items-center justify-end gap-2">
+            <span>Scale Up / Down</span>
+            <span className="bg-gray-800 px-1.5 py-0.5 rounded text-[10px] text-blue-300">Move Hands Apart</span>
+          </li>
+           <li className="flex items-center justify-end gap-2">
+            <span>Rotate Object</span>
+            <span className="bg-gray-800 px-1.5 py-0.5 rounded text-[10px] text-purple-300">Push Left / Pull Right</span>
+          </li>
         </ul>
       </div>
 

@@ -1,3 +1,4 @@
+
 import React, { useMemo, useRef, useState } from 'react';
 import { Canvas, useFrame, extend } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
@@ -37,68 +38,108 @@ const Particles: React.FC<{
   color: string;
 }> = ({ handData, shapeType, color }) => {
   const meshRef = useRef<THREE.InstancedMesh>(null);
-  const hoverRef = useRef<THREE.Vector3>(new THREE.Vector3(0, 0, 0));
+  const colorObj = useMemo(() => new THREE.Color(color), [color]);
   
+  // Interaction State
+  const transformState = useRef({
+    scale: 1.0,
+    rotationY: 0,
+    prevDist: 0,
+    prevDepthDiff: 0,
+    isInteracting: false
+  });
+
   // Buffers
   const targetPositions = useMemo(() => generateShapePositions(shapeType, PARTICLE_COUNT), [shapeType]);
-  
-  // Current state of particles
   const currentPositions = useMemo(() => new Float32Array(targetPositions), [targetPositions]);
   const velocities = useMemo(() => new Float32Array(PARTICLE_COUNT * 3), [targetPositions]);
   
   const dummy = useMemo(() => new THREE.Object3D(), []);
-  const colorObj = useMemo(() => new THREE.Color(color), [color]);
 
   useFrame((state) => {
     if (!meshRef.current) return;
 
     const hands = handData.current;
+    const ts = transformState.current;
     
-    // Interaction Factors
-    let expansionFactor = 1.0;
-    let turbulenceFactor = 0.0;
-    let attractor: THREE.Vector3 | null = null;
-    let repulsor: THREE.Vector3 | null = null;
+    // --- Hand Interaction Logic ---
+    // Rule: Need 2 hands, both pinching (< 0.3 means close pinch)
+    // 0 is fully closed pinch, 1 is fully open
+    const isDoublePinch = hands.length === 2 && 
+                          hands[0].pinchDistance < 0.4 && 
+                          hands[1].pinchDistance < 0.4;
 
-    if (hands.length > 0) {
-      // Logic: 
-      // Hand 1 (e.g. Left/Right based on index): Controls Expansion via Pinch
-      // Hand 2: Controls Turbulence or acts as Attractor
-      
-      const hand1 = hands[0];
-      const hand2 = hands[1];
+    if (isDoublePinch) {
+      // Sort hands by X to distinguish Left vs Right on screen
+      // Screen X: -1 (Left) to 1 (Right)
+      const sortedHands = [...hands].sort((a, b) => a.palmPosition.x - b.palmPosition.x);
+      const leftHand = sortedHands[0];
+      const rightHand = sortedHands[1];
 
-      // Map pinch to expansion (Closed = 0.2 scale, Open = 2.5 scale)
-      // pinchDistance is 0 (close) to 1 (open)
-      expansionFactor = 0.5 + (hand1.pinchDistance * 2.0);
+      // 1. Scale Calculation (Distance between hands)
+      // 3D Distance for robustness, but 2D X/Y is usually enough
+      const dist = Math.hypot(
+        leftHand.palmPosition.x - rightHand.palmPosition.x,
+        leftHand.palmPosition.y - rightHand.palmPosition.y
+      );
 
-      // If hand is closed (fist), high turbulence/explosion
-      if (!hand1.isOpen) {
-        turbulenceFactor = 0.2;
-      }
+      // 2. Rotation Calculation (Steering using Z-depth)
+      // Left Hand Depth vs Right Hand Depth
+      // Left moves away (lower Z), Right moves close (higher Z) -> Rotate CCW
+      const depthDiff = rightHand.palmPosition.z - leftHand.palmPosition.z;
 
-      // Hand position as attractor/repulsor
-      // Map hand X/Y (-1 to 1) to World Space (approx -20 to 20)
-      if (hand1.presence) {
-          attractor = new THREE.Vector3(hand1.palmPosition.x * 15, hand1.palmPosition.y * 10, 0);
-      }
-      
-      if (hand2?.presence) {
-          // Second hand acts as a repulsor if present
-          repulsor = new THREE.Vector3(hand2.palmPosition.x * 15, hand2.palmPosition.y * 10, 0);
+      if (!ts.isInteracting) {
+        // Just started interacting, reset deltas
+        ts.prevDist = dist;
+        ts.prevDepthDiff = depthDiff;
+        ts.isInteracting = true;
+      } else {
+        // Apply Scaling
+        const deltaDist = dist - ts.prevDist;
+        ts.scale += deltaDist * 2.0; // Sensitivity
+        ts.scale = Math.max(0.2, Math.min(ts.scale, 3.0)); // Clamp
+
+        // Apply Rotation
+        // If depthDiff increases (Right closer, Left farther) -> Rotate Negative Y
+        // Wait, User said: Left Away, Right Close -> Counter Clockwise
+        // Standard 3D Y-Axis: CCW is Positive rotation? Depends on coord system.
+        // Let's assume standard right-hand rule.
+        // Let's map change in depthDiff to rotation.
+        const deltaDepth = depthDiff - ts.prevDepthDiff;
+        ts.rotationY -= deltaDepth * 1.5; // Sensitivity
+        
+        // Update previous values
+        ts.prevDist = dist;
+        ts.prevDepthDiff = depthDiff;
       }
     } else {
-        // Idle animation breathing
-        expansionFactor = 1.0 + Math.sin(state.clock.elapsedTime) * 0.1;
+      ts.isInteracting = false;
     }
 
-    // Update Particles
+    // --- Particle Physics ---
+    // Base breathing animation
+    const breathing = 1.0 + Math.sin(state.clock.elapsedTime * 1.5) * 0.05;
+    
+    // Apply Transform to Mesh
+    // We can animate the whole mesh for performance
+    meshRef.current.rotation.y = THREE.MathUtils.lerp(meshRef.current.rotation.y, ts.rotationY, 0.1);
+    
+    // We combine interaction scale with breathing
+    const effectiveScale = THREE.MathUtils.lerp(
+        meshRef.current.scale.x, 
+        ts.scale * breathing, 
+        0.1
+    );
+    meshRef.current.scale.setScalar(effectiveScale);
+
+
+    // --- Individual Particle Simulation (Keep them alive) ---
     for (let i = 0; i < PARTICLE_COUNT; i++) {
       const idx = i * 3;
       
-      const tx = targetPositions[idx] * expansionFactor;
-      const ty = targetPositions[idx + 1] * expansionFactor;
-      const tz = targetPositions[idx + 2] * expansionFactor;
+      const tx = targetPositions[idx];
+      const ty = targetPositions[idx + 1];
+      const tz = targetPositions[idx + 2];
 
       const cx = currentPositions[idx];
       const cy = currentPositions[idx + 1];
@@ -108,50 +149,22 @@ const Particles: React.FC<{
       let vy = velocities[idx + 1];
       let vz = velocities[idx + 2];
 
-      // 1. Force towards target shape
+      // Simple Return to shape force
       vx += (tx - cx) * RETURN_SPEED;
       vy += (ty - cy) * RETURN_SPEED;
       vz += (tz - cz) * RETURN_SPEED;
 
-      // 2. Attractor (Hand)
-      if (attractor) {
-          const dx = attractor.x - cx;
-          const dy = attractor.y - cy;
-          const dz = attractor.z - cz;
-          const distSq = dx*dx + dy*dy + dz*dz + 0.1;
-          const f = 100 / distSq; // Attraction force
-          vx += dx * f * 0.001;
-          vy += dy * f * 0.001;
-          vz += dz * f * 0.001;
-      }
-
-      // 3. Repulsor (Second Hand)
-      if (repulsor) {
-          const dx = repulsor.x - cx;
-          const dy = repulsor.y - cy;
-          const dz = repulsor.z - cz;
-          const distSq = dx*dx + dy*dy + dz*dz + 0.1;
-          if (distSq < 100) {
-              const f = -200 / distSq;
-              vx += dx * f * 0.01;
-              vy += dy * f * 0.01;
-              vz += dz * f * 0.01;
-          }
-      }
-
-      // 4. Turbulence
-      if (turbulenceFactor > 0) {
-          vx += (Math.random() - 0.5) * turbulenceFactor;
-          vy += (Math.random() - 0.5) * turbulenceFactor;
-          vz += (Math.random() - 0.5) * turbulenceFactor;
-      }
+      // Slight turbulence for life
+      const noise = 0.01;
+      vx += (Math.random() - 0.5) * noise;
+      vy += (Math.random() - 0.5) * noise;
+      vz += (Math.random() - 0.5) * noise;
 
       // Damping
       vx *= (1 - DAMPING);
       vy *= (1 - DAMPING);
       vz *= (1 - DAMPING);
 
-      // Apply
       currentPositions[idx] += vx;
       currentPositions[idx + 1] += vy;
       currentPositions[idx + 2] += vz;
@@ -160,30 +173,28 @@ const Particles: React.FC<{
       velocities[idx + 1] = vy;
       velocities[idx + 2] = vz;
 
-      // Update Instance
       dummy.position.set(
           currentPositions[idx],
           currentPositions[idx + 1],
           currentPositions[idx + 2]
       );
       
-      // Scale particle based on distance from center for depth effect
-      const scale = Math.max(0.1, 1 - (Math.abs(currentPositions[idx+2]) / 50));
-      dummy.scale.setScalar(scale);
+      // Scale particles based on Z to fake some depth of field or shininess
+      const pScale = Math.max(0.1, 1 - (Math.abs(currentPositions[idx+2]) / 30));
+      dummy.scale.setScalar(pScale);
       
       dummy.updateMatrix();
       meshRef.current.setMatrixAt(i, dummy.matrix);
     }
     
-    // Update colors smoothly if prop changes
+    // Smooth Color Transition
     (meshRef.current.material as THREE.MeshBasicMaterial).color.lerp(colorObj, 0.1);
-
     meshRef.current.instanceMatrix.needsUpdate = true;
   });
 
   return (
     <instancedMesh ref={meshRef} args={[undefined, undefined, PARTICLE_COUNT]}>
-      <sphereGeometry args={[0.15, 6, 6]} />
+      <sphereGeometry args={[0.12, 6, 6]} />
       <meshBasicMaterial 
         toneMapped={false}
         color={color}
@@ -201,7 +212,8 @@ const ParticleScene: React.FC<ParticleSceneProps> = (props) => {
       <Canvas camera={{ position: [0, 0, 40], fov: 60 }} gl={{ antialias: false, toneMapping: THREE.ReinhardToneMapping }}>
         <color attach="background" args={['#050505']} />
         <Particles {...props} />
-        <OrbitControls enableZoom={false} enablePan={false} autoRotate autoRotateSpeed={0.5} />
+        {/* We disable OrbitControls autoRotate so user can control rotation */}
+        <OrbitControls enableZoom={false} enablePan={false} enableRotate={false} />
         <ambientLight intensity={0.5} />
       </Canvas>
     </div>
