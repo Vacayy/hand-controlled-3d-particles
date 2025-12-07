@@ -17,11 +17,12 @@ export class VisionService {
           modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
           delegate: "GPU",
         },
-        runningMode: "VIDEO",
+        // Switch to IMAGE mode for more robust frame handling without timestamp sync issues
+        runningMode: "IMAGE", 
         numHands: 2,
-        minHandDetectionConfidence: 0.5,
-        minHandPresenceConfidence: 0.5,
-        minTrackingConfidence: 0.5
+        minHandDetectionConfidence: 0.3, // Lowered for better detection
+        minHandPresenceConfidence: 0.3,
+        minTrackingConfidence: 0.3
       });
 
       return this.handLandmarker;

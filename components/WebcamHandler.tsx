@@ -27,15 +27,21 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
 
         if (videoRef.current && active) {
           videoRef.current.srcObject = stream;
-          // Explicitly play to avoid autoplay policies blocking it
-          videoRef.current.onloadeddata = async () => {
-            if (!active) return;
+          
+          // Wait for metadata to load to ensure dimensions are known
+          videoRef.current.onloadedmetadata = async () => {
+            if (!active || !videoRef.current) return;
             try {
-              await videoRef.current?.play();
+              await videoRef.current.play();
+              // Initialize vision service after video starts
               await VisionService.initialize();
-              setIsReady(true);
-              onCameraReady();
-              predict();
+              
+              if (active) {
+                setIsReady(true);
+                onCameraReady();
+                // Start loop
+                requestRef.current = requestAnimationFrame(predict);
+              }
             } catch (e) {
               console.error("Initialization error:", e);
             }
@@ -54,77 +60,75 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach(track => track.stop());
       }
-      cancelAnimationFrame(requestRef.current);
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const predict = () => {
     const landmarker = VisionService.getLandmarker();
-    if (videoRef.current && landmarker && isReady) {
+    
+    if (videoRef.current && landmarker && videoRef.current.readyState >= 2) {
       // Ensure video has dimensions
       if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-        const startTimeMs = performance.now();
-        const results = landmarker.detectForVideo(videoRef.current, startTimeMs);
+        try {
+          // Use detect() for IMAGE mode - simpler and more robust than detectForVideo
+          const results = landmarker.detect(videoRef.current);
 
-        if (results.landmarks) {
-          const metrics: HandMetrics[] = results.landmarks.map((landmarks) => {
-            // Calculate Reference Hand Scale (Wrist 0 to Middle Finger MCP 9)
-            // This allows gestures to work regardless of distance from camera
-            const wrist = landmarks[0];
-            const middleMCP = landmarks[9];
-            const handScale = Math.hypot(
-              wrist.x - middleMCP.x,
-              wrist.y - middleMCP.y,
-              wrist.z - middleMCP.z
-            );
-            
-            // 1. Calculate Pinch (Thumb Tip 4 to Index Tip 8)
-            const thumbTip = landmarks[4];
-            const indexTip = landmarks[8];
-            const rawPinchDist = Math.hypot(
-              thumbTip.x - indexTip.x,
-              thumbTip.y - indexTip.y,
-              thumbTip.z - indexTip.z
-            );
-            
-            // Normalize pinch based on hand scale
-            // Closed ~ 0.2 * scale, Open > 1.0 * scale (rough heuristics)
-            const relativePinch = rawPinchDist / handScale;
-            // Map 0.15 (touching) to 1.2 (wide open) -> 0 to 1
-            const normalizedPinch = Math.min(Math.max((relativePinch - 0.15) / 1.0, 0), 1);
-
-            // 2. Calculate "Openness" 
-            // Average distance of all fingertips from wrist
-            const tips = [4, 8, 12, 16, 20];
-            let totalTipDist = 0;
-            tips.forEach(idx => {
-              totalTipDist += Math.hypot(
-                  landmarks[idx].x - wrist.x,
-                  landmarks[idx].y - wrist.y
+          if (results.landmarks) {
+            const metrics: HandMetrics[] = results.landmarks.map((landmarks) => {
+              // Calculate Reference Hand Scale (Wrist 0 to Middle Finger MCP 9)
+              const wrist = landmarks[0];
+              const middleMCP = landmarks[9];
+              const handScale = Math.hypot(
+                wrist.x - middleMCP.x,
+                wrist.y - middleMCP.y,
+                wrist.z - middleMCP.z
               );
+              
+              // 1. Calculate Pinch (Thumb Tip 4 to Index Tip 8)
+              const thumbTip = landmarks[4];
+              const indexTip = landmarks[8];
+              const rawPinchDist = Math.hypot(
+                thumbTip.x - indexTip.x,
+                thumbTip.y - indexTip.y,
+                thumbTip.z - indexTip.z
+              );
+              
+              // Normalize pinch based on hand scale
+              const relativePinch = rawPinchDist / handScale;
+              const normalizedPinch = Math.min(Math.max((relativePinch - 0.2) / 1.0, 0), 1);
+
+              // 2. Calculate "Openness" 
+              const tips = [4, 8, 12, 16, 20];
+              let totalTipDist = 0;
+              tips.forEach(idx => {
+                totalTipDist += Math.hypot(
+                    landmarks[idx].x - wrist.x,
+                    landmarks[idx].y - wrist.y
+                );
+              });
+              const avgTipDist = totalTipDist / 5;
+              const isOpen = avgTipDist > (handScale * 1.2);
+
+              // 3. Position (normalized -1 to 1)
+              const x = (wrist.x - 0.5) * -2; 
+              const y = -(wrist.y - 0.5) * 2; 
+
+              return {
+                isOpen,
+                pinchDistance: normalizedPinch,
+                palmPosition: { x, y, z: 0 },
+                presence: true
+              };
             });
-            const avgTipDist = totalTipDist / 5;
             
-            // If tips are far from wrist relative to hand scale, it's open.
-            // Fist: avgTipDist ~ 0.8 * handScale
-            // Open: avgTipDist ~ 1.8 * handScale
-            const isOpen = avgTipDist > (handScale * 1.3);
-
-            // 3. Position (normalized -1 to 1)
-            // Landmarks are 0-1. Flip X for mirror effect.
-            const x = (wrist.x - 0.5) * -2; 
-            const y = -(wrist.y - 0.5) * 2; 
-
-            return {
-              isOpen,
-              pinchDistance: normalizedPinch,
-              palmPosition: { x, y, z: 0 },
-              presence: true
-            };
-          });
-          
-          onHandsUpdate(metrics);
+            onHandsUpdate(metrics);
+          }
+        } catch (e) {
+          console.warn("Prediction error:", e);
         }
       }
     }
