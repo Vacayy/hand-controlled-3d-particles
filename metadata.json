@@ -1,5 +1,5 @@
 {
-  "name": "Copy of Hand-Controlled 3D Particles",
+  "name": "Hand-Controlled 3D Particles",
   "description": "Interactive 3D particle system controlled by hand gestures using computer vision.",
   "requestFramePermissions": [
     "camera"

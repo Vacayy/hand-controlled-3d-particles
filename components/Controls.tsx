@@ -38,13 +38,8 @@ const Controls: React.FC<ControlsProps> = ({
     <div className="absolute top-0 left-0 w-full h-full pointer-events-none flex flex-col justify-between p-6">
       
       {/* Header / Status */}
-      <div className="flex justify-between items-start w-full">
-        <div>
-           <h1 className="text-2xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-600">
-            Flux Particles
-          </h1>
-          <p className="text-xs text-gray-400 mt-1">Interactive 3D System</p>
-        </div>
+      <div className="flex justify-end items-start w-full">
+      
 
         <div className={`flex items-center gap-2 px-4 py-2 rounded-full backdrop-blur-md border ${handDetected ? 'bg-green-500/10 border-green-500/30 text-green-400' : 'bg-red-500/10 border-red-500/30 text-red-400'}`}>
             <Hand size={16} className={handDetected ? "animate-pulse" : ""} />

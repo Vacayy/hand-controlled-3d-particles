@@ -1,4 +1,3 @@
-
 import React, { useEffect, useRef, useState } from 'react';
 import { VisionService } from '../services/visionService';
 import { HandMetrics } from '../types';
@@ -6,50 +5,103 @@ import { HandMetrics } from '../types';
 interface WebcamHandlerProps {
   onHandsUpdate: (metrics: HandMetrics[]) => void;
   onCameraReady: () => void;
+  onCameraError?: (error: Error) => void;
 }
 
-const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraReady }) => {
+const HAND_CONNECTIONS = [
+  [0, 1], [1, 2], [2, 3], [3, 4], // Thumb
+  [0, 5], [5, 6], [6, 7], [7, 8], // Index
+  [0, 17], [5, 9], [9, 13], [13, 17], // Palm
+  [9, 10], [10, 11], [11, 12], // Middle
+  [13, 14], [14, 15], [15, 16], // Ring
+  [17, 18], [18, 19], [19, 20], // Pinky
+];
+
+const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraReady, onCameraError }) => {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const requestRef = useRef<number>(0);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [isReady, setIsReady] = useState(false);
 
   useEffect(() => {
     let active = true;
+    let timeoutId: NodeJS.Timeout;
+
+    // Handle Resize
+    const handleResize = () => {
+      if (canvasRef.current) {
+        canvasRef.current.width = window.innerWidth;
+        canvasRef.current.height = window.innerHeight;
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    handleResize();
+
+    const handleError = (error: unknown) => {
+      if (!active) return;
+      console.error("WebcamHandler Error:", error);
+      if (onCameraError) {
+        onCameraError(error instanceof Error ? error : new Error(String(error)));
+      }
+    };
+
+    const initializeVision = async (video: HTMLVideoElement) => {
+      try {
+        await video.play();
+        await VisionService.initialize();
+        
+        if (active) {
+          clearTimeout(timeoutId);
+          setIsReady(true);
+          onCameraReady();
+          requestRef.current = requestAnimationFrame(predict);
+        }
+      } catch (e) {
+        clearTimeout(timeoutId);
+        handleError(e);
+      }
+    };
 
     const startCamera = async () => {
+      // Safety timeout: if initialization takes longer than 15s, fail.
+      timeoutId = setTimeout(() => {
+        handleError(new Error("Initialization timed out. Network might be slow or camera blocked."));
+      }, 15000);
+
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
             frameRate: { ideal: 30 }
           }
         });
 
-        if (videoRef.current && active) {
+        if (!active) {
+          stream.getTracks().forEach(track => track.stop());
+          return;
+        }
+
+        if (videoRef.current) {
           videoRef.current.srcObject = stream;
           
-          // Wait for metadata to load to ensure dimensions are known
-          videoRef.current.onloadedmetadata = async () => {
-            if (!active || !videoRef.current) return;
-            try {
-              await videoRef.current.play();
-              // Initialize vision service after video starts
-              await VisionService.initialize();
-              
-              if (active) {
-                setIsReady(true);
-                onCameraReady();
-                // Start loop
-                requestRef.current = requestAnimationFrame(predict);
-              }
-            } catch (e) {
-              console.error("Initialization error:", e);
+          // Robust start logic: Check readyState OR wait for event
+          if (videoRef.current.readyState >= 2) {
+             initializeVision(videoRef.current);
+          } else {
+            videoRef.current.onloadedmetadata = () => {
+              if (active && videoRef.current) initializeVision(videoRef.current);
+            };
+            // Fallback: sometimes onloadedmetadata doesn't fire but oncanplay does
+            videoRef.current.oncanplay = () => {
+               if (active && videoRef.current && !isReady) initializeVision(videoRef.current);
             }
-          };
+          }
         }
       } catch (err) {
-        console.error("Error accessing webcam:", err);
+        clearTimeout(timeoutId);
+        handleError(err);
       }
     };
 
@@ -57,6 +109,8 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
 
     return () => {
       active = false;
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', handleResize);
       if (videoRef.current && videoRef.current.srcObject) {
         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
         tracks.forEach(track => track.stop());
@@ -68,42 +122,85 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const drawHandSkeleton = (ctx: CanvasRenderingContext2D, landmarks: any[]) => {
+    const width = ctx.canvas.width;
+    const height = ctx.canvas.height;
+
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // Draw Connections
+    ctx.strokeStyle = 'rgba(0, 255, 255, 0.6)'; 
+    ctx.shadowColor = 'rgba(0, 255, 255, 0.8)';
+    ctx.shadowBlur = 10;
+    
+    for (const [start, end] of HAND_CONNECTIONS) {
+      const p1 = landmarks[start];
+      const p2 = landmarks[end];
+      
+      ctx.beginPath();
+      ctx.moveTo(p1.x * width, p1.y * height);
+      ctx.lineTo(p2.x * width, p2.y * height);
+      ctx.stroke();
+    }
+    ctx.shadowBlur = 0;
+
+    // Draw Joints
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+    for (const landmark of landmarks) {
+      const x = landmark.x * width;
+      const y = landmark.y * height;
+      
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, 2 * Math.PI);
+      ctx.fill();
+    }
+  };
+
   const predict = () => {
     const landmarker = VisionService.getLandmarker();
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
     
-    if (videoRef.current && landmarker && videoRef.current.readyState >= 2) {
-      // Ensure video has dimensions
-      if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
+    if (video && landmarker && video.readyState >= 2 && canvas) {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
         try {
-          // Use detect() for IMAGE mode - simpler and more robust than detectForVideo
-          const results = landmarker.detect(videoRef.current);
+          const results = landmarker.detect(video);
+          const ctx = canvas.getContext('2d');
+          
+          if (ctx) {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+          }
 
-          if (results.landmarks) {
+          if (results.landmarks && results.landmarks.length > 0) {
+            
+            // Draw Hands
+            if (ctx) {
+              results.landmarks.forEach(landmarks => {
+                drawHandSkeleton(ctx, landmarks);
+              });
+            }
+
             const metrics: HandMetrics[] = results.landmarks.map((landmarks) => {
-              // Calculate Reference Hand Scale (Wrist 0 to Middle Finger MCP 9)
               const wrist = landmarks[0];
               const middleMCP = landmarks[9];
-              // 2D distance for robust scale calculation
               const handScale = Math.hypot(
                 wrist.x - middleMCP.x,
                 wrist.y - middleMCP.y
               );
               
-              // 1. Calculate Pinch (Thumb Tip 4 to Index Tip 8)
               const thumbTip = landmarks[4];
               const indexTip = landmarks[8];
               const rawPinchDist = Math.hypot(
                 thumbTip.x - indexTip.x,
                 thumbTip.y - indexTip.y,
-                thumbTip.z - indexTip.z
+                thumbTip.z - indexTip.z 
               );
               
-              // Normalize pinch based on hand scale
               const relativePinch = rawPinchDist / handScale;
-              // 0 = Closed (Pinch), 1 = Open
-              const normalizedPinch = Math.min(Math.max((relativePinch - 0.2) / 1.0, 0), 1);
+              const normalizedPinch = Math.min(Math.max((relativePinch - 0.2) / 0.8, 0), 1);
 
-              // 2. Calculate "Openness" 
               const tips = [4, 8, 12, 16, 20];
               let totalTipDist = 0;
               tips.forEach(idx => {
@@ -115,15 +212,10 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
               const avgTipDist = totalTipDist / 5;
               const isOpen = avgTipDist > (handScale * 1.2);
 
-              // 3. Position (normalized -1 to 1)
               const x = (wrist.x - 0.5) * -2; 
               const y = -(wrist.y - 0.5) * 2; 
-
-              // 4. Estimate Z (Depth) based on handScale
-              // handScale usually varies between 0.05 (far) to 0.25 (close)
-              // We map this to a Z range approx -1 to 1
-              // Larger scale = closer = positive Z
-              const estimatedZ = (handScale - 0.15) * 10;
+              
+              const estimatedZ = (handScale - 0.15) * 20;
 
               return {
                 isOpen,
@@ -134,6 +226,8 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
             });
             
             onHandsUpdate(metrics);
+          } else {
+             onHandsUpdate([]);
           }
         } catch (e) {
           console.warn("Prediction error:", e);
@@ -144,18 +238,20 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
   };
 
   return (
-    <div className="absolute top-4 left-4 z-50 pointer-events-none opacity-50 hover:opacity-100 transition-opacity">
-        {/* Hidden processing video */}
-        <video
-            ref={videoRef}
-            playsInline
-            muted
-            className="w-32 h-24 rounded-lg border-2 border-white/20 object-cover scale-x-[-1]"
-        />
-        <div className="text-[10px] text-white/50 mt-1 uppercase tracking-widest text-center">
-             Input Feed
-        </div>
-    </div>
+    <>
+      <canvas 
+        ref={canvasRef}
+        className="fixed inset-0 w-full h-full pointer-events-none z-10 scale-x-[-1]"
+      />
+      <div className="absolute top-4 left-4 z-50 pointer-events-none opacity-0">
+          <video
+              ref={videoRef}
+              playsInline
+              muted
+              className="w-32 h-24 rounded-lg object-cover scale-x-[-1]"
+          />
+      </div>
+    </>
   );
 };
 
