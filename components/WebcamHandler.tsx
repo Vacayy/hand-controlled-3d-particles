@@ -26,7 +26,7 @@ const WebcamHandler: React.FC<WebcamHandlerProps> = ({ onHandsUpdate, onCameraRe
 
   useEffect(() => {
     let active = true;
-    let timeoutId: NodeJS.Timeout;
+    let timeoutId: ReturnType<typeof setTimeout>;
 
     // Handle Resize
     const handleResize = () => {
